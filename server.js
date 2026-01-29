@@ -112,17 +112,21 @@ app.prepare().then(() => {
         games.set(gameId, chess);
         
         // Send complete game state
+        const isGameOver = gameData?.status === 'completed';
         socket.emit('game-state', {
           fen: chess.fen(),
           turn: chess.turn(),
-          gameOver: chess.isGameOver(),
+          gameOver: isGameOver,
           moves: gameData?.moves || [],
           capturedPieces: gameData?.capturedPieces || { white: [], black: [] },
           whiteTimeRemaining: gameData?.whiteTimeRemaining || 600,
           blackTimeRemaining: gameData?.blackTimeRemaining || 600,
+          status: gameData?.status,
+          winner: gameData?.winner,
+          endReason: gameData?.endReason,
         });
 
-        console.log(`User joined game: ${gameId}, Moves: ${gameData?.moves?.length || 0}`);
+        console.log(`User joined game: ${gameId}, Moves: ${gameData?.moves?.length || 0}, Status: ${gameData?.status}`);
       } catch (error) {
         console.error('Join game error:', error);
         
@@ -173,7 +177,33 @@ app.prepare().then(() => {
                   const color = result.color === 'w' ? 'white' : 'black';
                   game.capturedPieces[color].push(result.captured);
                 }
+                
+                // Check if game is over (checkmate, stalemate, draw)
+                if (chess.isGameOver()) {
+                  game.status = 'completed';
+                  game.endedAt = new Date();
+                  
+                  if (chess.isCheckmate()) {
+                    game.endReason = 'checkmate';
+                    // Winner is the player who just moved (opposite of current turn)
+                    game.winner = chess.turn() === 'w' ? game.blackPlayer : game.whitePlayer;
+                    game.result = chess.turn() === 'w' ? 'black' : 'white';
+                    console.log(`🏆 Game ${gameId} ended by checkmate. Winner: ${game.result}, Status: ${game.status}`);
+                  } else if (chess.isStalemate()) {
+                    game.endReason = 'stalemate';
+                    game.result = 'draw';
+                    game.winner = null;
+                    console.log(`🤝 Game ${gameId} ended in stalemate`);
+                  } else if (chess.isDraw()) {
+                    game.endReason = 'draw';
+                    game.result = 'draw';
+                    game.winner = null;
+                    console.log(`🤝 Game ${gameId} ended in draw`);
+                  }
+                }
+                
                 await game.save();
+                console.log(`💾 Game saved. Status: ${game.status}, EndReason: ${game.endReason}`);
                 capturedPieces = game.capturedPieces;
                 
                 console.log('Game updated in DB. Moves:', game.moves.length);

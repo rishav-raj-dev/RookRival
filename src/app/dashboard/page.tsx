@@ -18,6 +18,7 @@ export default function DashboardPage() {
   const [showTimeControls, setShowTimeControls] = useState(false);
   const [searching, setSearching] = useState(false);
   const [searchTimer, setSearchTimer] = useState(60);
+  const [pollInterval, setPollInterval] = useState<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     if (authLoading) return;
@@ -58,22 +59,27 @@ export default function DashboardPage() {
       if (response.data.data.matched) {
         router.push(`/game/${response.data.data.gameId}`);
       } else {
-        // Start polling for match
-        const pollInterval = setInterval(async () => {
+        // Start polling for match using GET endpoint
+        const interval = setInterval(async () => {
           try {
-            const pollResponse = await axios.post('/api/matchmaking', { timeControl });
+            const pollResponse = await axios.get('/api/matchmaking');
             if (pollResponse.data.data.matched) {
-              clearInterval(pollInterval);
+              clearInterval(interval);
+              setPollInterval(null);
               router.push(`/game/${pollResponse.data.data.gameId}`);
             }
           } catch (error) {
             console.error('Polling error:', error);
           }
-        }, 3000);
+        }, 2000); // Poll every 2 seconds
+        
+        setPollInterval(interval);
 
         // Clear interval after 60 seconds
         setTimeout(() => {
-          clearInterval(pollInterval);
+          clearInterval(interval);
+          setPollInterval(null);
+          setSearching(false);
         }, 60000);
       }
     } catch (error) {
@@ -84,6 +90,12 @@ export default function DashboardPage() {
 
   const handleCancelSearch = async () => {
     try {
+      // Clear polling interval if exists
+      if (pollInterval) {
+        clearInterval(pollInterval);
+        setPollInterval(null);
+      }
+      
       await axios.delete('/api/matchmaking');
       setSearching(false);
       setSearchTimer(60);

@@ -7,6 +7,8 @@ import { getRatingRange } from '@/utils/elo';
 
 // In-memory matchmaking queue (in production, use Redis)
 const matchmakingQueue: Map<string, any> = new Map();
+// Store match results for users to poll
+const matchResults: Map<string, any> = new Map();
 
 export async function POST(request: NextRequest) {
   try {
@@ -74,6 +76,8 @@ export async function POST(request: NextRequest) {
     }
 
     if (matchFound && opponentId) {
+      console.log(`🎮 Match found! User ${authUser.userId} matched with ${opponentId}`);
+      
       // Remove opponent from queue
       matchmakingQueue.delete(opponentId);
 
@@ -107,6 +111,25 @@ export async function POST(request: NextRequest) {
         capturedPieces: { white: [], black: [] },
       });
 
+      // Store match result for the waiting opponent to poll
+      matchResults.set(opponentId, {
+        matched: true,
+        gameId: game._id,
+        color: isWhite ? 'black' : 'white',
+        timestamp: Date.now(),
+      });
+      
+      console.log(`📢 Stored match result for user ${opponentId}:`, {
+        gameId: game._id,
+        color: isWhite ? 'black' : 'white',
+      });
+
+      // Clean up after 10 seconds
+      setTimeout(() => {
+        matchResults.delete(opponentId);
+        console.log(`🧹 Cleaned up match result for user ${opponentId}`);
+      }, 10000);
+
       return NextResponse.json({
         success: true,
         data: { 
@@ -123,10 +146,13 @@ export async function POST(request: NextRequest) {
         timeControl,
         timestamp: Date.now(),
       });
+      
+      console.log(`➕ User ${authUser.userId} (${user.username}) added to queue. Queue size: ${matchmakingQueue.size}`);
 
       // Set timeout to remove from queue after 60 seconds
       setTimeout(() => {
         matchmakingQueue.delete(authUser.userId);
+        console.log(`⏱️ User ${authUser.userId} removed from queue (timeout)`);
       }, 60000);
 
       return NextResponse.json({
@@ -163,6 +189,46 @@ export async function DELETE(request: NextRequest) {
     });
   } catch (error) {
     console.error('Cancel matchmaking error:', error);
+    return NextResponse.json(
+      { success: false, message: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+// Check if match has been found (for polling)
+export async function GET(request: NextRequest) {
+  try {
+    const authUser = getUserFromRequest(request);
+
+    if (!authUser) {
+      return NextResponse.json(
+        { success: false, message: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    // Check if there's a match result for this user
+    const matchResult = matchResults.get(authUser.userId);
+    
+    if (matchResult) {
+      console.log(`✅ User ${authUser.userId} polling - Match found!`, matchResult);
+      // Clean up the result
+      matchResults.delete(authUser.userId);
+      
+      return NextResponse.json({
+        success: true,
+        data: matchResult,
+      });
+    }
+
+    console.log(`⏳ User ${authUser.userId} polling - No match yet`);
+    return NextResponse.json({
+      success: true,
+      data: { matched: false },
+    });
+  } catch (error) {
+    console.error('Check match error:', error);
     return NextResponse.json(
       { success: false, message: 'Internal server error' },
       { status: 500 }

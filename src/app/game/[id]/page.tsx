@@ -30,7 +30,11 @@ export default function GamePage() {
   const [capturedPieces, setCapturedPieces] = useState({ white: [], black: [] });
   const [drawOffered, setDrawOffered] = useState(false);
   const [moveHistory, setMoveHistory] = useState<string[]>([]);
+  const [lastMove, setLastMove] = useState<{ from: string; to: string } | null>(null);
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'info' | 'warning' | 'error' } | null>(null);
+  const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
+  const [possibleMoves, setPossibleMoves] = useState<string[]>([]);
+  const [draggedSquare, setDraggedSquare] = useState<string | null>(null);
 
   // Auto-hide notification after 3 seconds
   useEffect(() => {
@@ -95,6 +99,19 @@ export default function GamePage() {
 
     newSocket.on('game-state', (data) => {
       console.log('Game state received from server:', data);
+      // Always check and update game over state from the socket data
+      // This ensures the state is correct even after a refresh
+      if (data.status === 'completed' || data.gameOver) {
+        console.log('Setting game over from socket. Status:', data.status, 'GameOver:', data.gameOver);
+        setGameOver(true);
+        if (data.endReason) {
+          setGameResult({
+            reason: data.endReason,
+            winner: data.winner || null,
+          });
+        }
+      }
+      
       // Only load the position if we don't already have the game data loaded
       // This prevents overriding the already-loaded database state
       setGame((currentGame: any) => {
@@ -134,6 +151,9 @@ export default function GamePage() {
       chess.load(data.fen);
       setFen(data.fen);
       setCurrentTurn(data.turn);
+      if (data.move) {
+        setLastMove({ from: data.move.from, to: data.move.to });
+      }
       if (data.capturedPieces) {
         setCapturedPieces(data.capturedPieces);
       }
@@ -144,13 +164,26 @@ export default function GamePage() {
       // Check for game end conditions
       if (data.gameOver) {
         setGameOver(true);
-        if (data.isCheckmate) {
-          setGameResult({ reason: 'checkmate', winner: data.turn === 'w' ? 'black' : 'white' });
-        } else if (data.isStalemate) {
-          setGameResult({ reason: 'stalemate', winner: null });
-        } else if (data.isDraw) {
-          setGameResult({ reason: 'draw', winner: null });
-        }
+        setGame((currentGame: any) => {
+          if (!currentGame) return currentGame;
+          
+          if (data.isCheckmate) {
+            const winner = data.turn === 'w' ? currentGame.blackPlayer : currentGame.whitePlayer;
+            setGameResult({ reason: 'checkmate', winner });
+            setNotification({ 
+              message: winner._id === user?._id ? 'Checkmate! You win! 🎉' : 'Checkmate! You lost.', 
+              type: winner._id === user?._id ? 'success' : 'error' 
+            });
+          } else if (data.isStalemate) {
+            setGameResult({ reason: 'stalemate', winner: null });
+            setNotification({ message: 'Game ended in stalemate', type: 'info' });
+          } else if (data.isDraw) {
+            setGameResult({ reason: 'draw', winner: null });
+            setNotification({ message: 'Game ended in a draw', type: 'info' });
+          }
+          
+          return currentGame;
+        });
       }
     });
 
@@ -247,31 +280,21 @@ export default function GamePage() {
       return false;
     }
 
-    try {
-      const move = chess.move({
-        from: sourceSquare,
-        to: targetSquare,
-        promotion: 'q', // Always promote to queen for simplicity
-      });
+    // Clear selected square and possible moves
+    setSelectedSquare(null);
+    setPossibleMoves([]);
+    setDraggedSquare(null);
 
-      if (move === null) return false;
-
-      setFen(chess.fen());
-      setCurrentTurn(chess.turn());
-
-      // Emit move to server
-      if (socket) {
-        socket.emit('make-move', {
-          gameId,
-          move: { from: sourceSquare, to: targetSquare, promotion: 'q' },
-        });
-      }
-
-      return true;
-    } catch (error) {
-      return false;
-    }
+    return makeMove(sourceSquare, targetSquare);
   }, [chess, currentTurn, game, gameId, gameOver, socket, user]);
+
+  const onPieceDragBegin = (piece: string, sourceSquare: string) => {
+    setDraggedSquare(sourceSquare);
+  };
+
+  const onPieceDragEnd = () => {
+    setDraggedSquare(null);
+  };
 
   const handleResign = async () => {
     if (socket && user && !gameOver) {
@@ -304,6 +327,155 @@ export default function GamePage() {
       setGameOver(true);
       setGameResult({ reason: 'draw', winner: null });
       setDrawOffered(false);
+    }
+  };
+
+  const getSquareStyles = () => {
+    const styles: Record<string, React.CSSProperties> = {};
+
+    // Highlight last move
+    if (lastMove) {
+      styles[lastMove.from] = {
+        backgroundColor: 'rgba(255, 255, 0, 0.4)',
+      };
+      styles[lastMove.to] = {
+        backgroundColor: 'rgba(255, 255, 0, 0.4)',
+      };
+    }
+
+    // Highlight selected square
+    if (selectedSquare) {
+      styles[selectedSquare] = {
+        backgroundColor: 'rgba(130, 151, 105, 0.6)',
+      };
+    }
+
+    // Highlight dragged square
+    if (draggedSquare) {
+      styles[draggedSquare] = {
+        backgroundColor: 'rgba(130, 151, 105, 0.5)',
+      };
+    }
+
+    // Show possible moves with dots
+    possibleMoves.forEach((square) => {
+      const hasPiece = chess.get(square as any);
+      styles[square] = {
+        background: hasPiece
+          ? 'radial-gradient(circle, rgba(0,0,0,.1) 85%, transparent 85%)'
+          : 'radial-gradient(circle, rgba(0,0,0,.2) 25%, transparent 25%)',
+        borderRadius: '50%',
+      };
+    });
+
+    // Highlight king in check
+    if (chess.inCheck()) {
+      const kingSquare = findKingSquare(chess.turn());
+      if (kingSquare) {
+        styles[kingSquare] = {
+          backgroundColor: chess.isCheckmate() ? 'rgba(255, 0, 0, 0.7)' : 'rgba(255, 0, 0, 0.5)',
+          boxShadow: chess.isCheckmate() ? 'inset 0 0 20px rgba(139, 0, 0, 0.8)' : 'inset 0 0 15px rgba(139, 0, 0, 0.6)',
+        };
+      }
+    }
+
+    return styles;
+  };
+
+  const findKingSquare = (color: 'w' | 'b') => {
+    const board = chess.board();
+    for (let row = 0; row < 8; row++) {
+      for (let col = 0; col < 8; col++) {
+        const piece = board[row][col];
+        if (piece && piece.type === 'k' && piece.color === color) {
+          const file = String.fromCharCode(97 + col); // a-h
+          const rank = (8 - row).toString(); // 1-8
+          return file + rank;
+        }
+      }
+    }
+    return null;
+  };
+
+  const getMoves = (square: string) => {
+    const moves = chess.moves({ square: square as any, verbose: true });
+    return moves.map((move) => move.to);
+  };
+
+  const onSquareClick = (square: string) => {
+    if (gameOver || !game || game.status !== 'active') return;
+
+    // Check if it's the player's turn
+    const isWhitePlayer = game.whitePlayer._id === user?._id;
+    const isBlackPlayer = game.blackPlayer._id === user?._id;
+    
+    if ((currentTurn === 'w' && !isWhitePlayer) || (currentTurn === 'b' && !isBlackPlayer)) {
+      return;
+    }
+
+    const piece = chess.get(square as any);
+
+    // If a square is already selected
+    if (selectedSquare) {
+      // If clicking the same square, deselect
+      if (selectedSquare === square) {
+        setSelectedSquare(null);
+        setPossibleMoves([]);
+        return;
+      }
+
+      // If clicking a possible move, make the move
+      if (possibleMoves.includes(square)) {
+        makeMove(selectedSquare, square);
+        setSelectedSquare(null);
+        setPossibleMoves([]);
+        return;
+      }
+
+      // If clicking another piece of the same color, select it
+      if (piece && piece.color === chess.turn()) {
+        setSelectedSquare(square);
+        setPossibleMoves(getMoves(square));
+        return;
+      }
+
+      // Otherwise, deselect
+      setSelectedSquare(null);
+      setPossibleMoves([]);
+    } else {
+      // No square selected, select this square if it has a piece of the current player
+      if (piece && piece.color === chess.turn()) {
+        setSelectedSquare(square);
+        setPossibleMoves(getMoves(square));
+      }
+    }
+  };
+
+  const makeMove = (from: string, to: string) => {
+    try {
+      const move = chess.move({
+        from,
+        to,
+        promotion: 'q', // Always promote to queen for simplicity
+      });
+
+      if (move === null) return false;
+
+      setFen(chess.fen());
+      setCurrentTurn(chess.turn());
+      setLastMove({ from, to });
+
+      // Emit move to server
+      if (socket) {
+        socket.emit('make-move', {
+          gameId,
+          move: { from, to, promotion: 'q' },
+        });
+      }
+
+      return true;
+    } catch (error) {
+      return false;
     }
   };
 
@@ -384,11 +556,16 @@ export default function GamePage() {
               <Chessboard
                 position={fen}
                 onPieceDrop={onDrop}
+                onSquareClick={onSquareClick}
+                onPieceDragBegin={onPieceDragBegin}
+                onPieceDragEnd={onPieceDragEnd}
                 boardOrientation={playerColor}
                 customBoardStyle={{
                   borderRadius: '8px',
                   boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
                 }}
+                customSquareStyles={getSquareStyles()}
+                areArrowsAllowed={false}
               />
             </div>
 
