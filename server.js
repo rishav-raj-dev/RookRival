@@ -28,6 +28,77 @@ const connectDB = async () => {
 
 connectDB();
 
+// Elo rating calculation (Chess.com style - K-factor of 32)
+function calculateEloRating(winnerRating, loserRating, isDraw = false, kFactor = 32) {
+  // Expected scores
+  const expectedWinner = 1 / (1 + Math.pow(10, (loserRating - winnerRating) / 400));
+  const expectedLoser = 1 / (1 + Math.pow(10, (winnerRating - loserRating) / 400));
+
+  let actualWinner, actualLoser;
+  if (isDraw) {
+    actualWinner = 0.5;
+    actualLoser = 0.5;
+  } else {
+    actualWinner = 1;
+    actualLoser = 0;
+  }
+
+  // Calculate new ratings
+  const newWinnerRating = Math.round(winnerRating + kFactor * (actualWinner - expectedWinner));
+  const newLoserRating = Math.round(loserRating + kFactor * (actualLoser - expectedLoser));
+
+  return { newWinnerRating, newLoserRating };
+}
+
+// Update player ratings after game ends
+async function updatePlayerRatings(game, winner, isDraw = false) {
+  try {
+    const UserModel = mongoose.connection.models.User || require('./src/models/User').default;
+    const whiteUser = await UserModel.findById(game.whitePlayer._id || game.whitePlayer);
+    const blackUser = await UserModel.findById(game.blackPlayer._id || game.blackPlayer);
+
+    if (!whiteUser || !blackUser) {
+      console.error('❌ Could not find users for rating update');
+      return;
+    }
+
+    const whiteRating = whiteUser.rating || 1200;
+    const blackRating = blackUser.rating || 1200;
+
+    console.log(`📊 Before - White: ${whiteRating}, Black: ${blackRating}`);
+
+    if (isDraw) {
+      // Draw - both players exchange rating points based on expected outcome
+      const { newWinnerRating, newLoserRating } = calculateEloRating(whiteRating, blackRating, true);
+      whiteUser.rating = newWinnerRating;
+      blackUser.rating = newLoserRating;
+    } else if (winner) {
+      // Someone won - calculate rating changes
+      const isWhiteWinner = (winner._id || winner).toString() === (game.whitePlayer._id || game.whitePlayer).toString();
+      const { newWinnerRating, newLoserRating } = calculateEloRating(
+        isWhiteWinner ? whiteRating : blackRating,
+        isWhiteWinner ? blackRating : whiteRating,
+        false
+      );
+
+      if (isWhiteWinner) {
+        whiteUser.rating = newWinnerRating;
+        blackUser.rating = newLoserRating;
+      } else {
+        blackUser.rating = newWinnerRating;
+        whiteUser.rating = newLoserRating;
+      }
+    }
+
+    await whiteUser.save();
+    await blackUser.save();
+
+    console.log(`📊 After - White: ${whiteUser.rating} (${whiteUser.rating - whiteRating > 0 ? '+' : ''}${whiteUser.rating - whiteRating}), Black: ${blackUser.rating} (${blackUser.rating - blackRating > 0 ? '+' : ''}${blackUser.rating - blackRating})`);
+  } catch (error) {
+    console.error('❌ Error updating player ratings:', error);
+  }
+}
+
 app.prepare().then(() => {
   const server = createServer(async (req, res) => {
     try {
@@ -189,16 +260,22 @@ app.prepare().then(() => {
                     game.winner = chess.turn() === 'w' ? game.blackPlayer : game.whitePlayer;
                     game.result = chess.turn() === 'w' ? 'black' : 'white';
                     console.log(`🏆 Game ${gameId} ended by checkmate. Winner: ${game.result}, Status: ${game.status}`);
+                    // Update Elo ratings
+                    await updatePlayerRatings(game, game.winner, false);
                   } else if (chess.isStalemate()) {
                     game.endReason = 'stalemate';
                     game.result = 'draw';
                     game.winner = null;
                     console.log(`🤝 Game ${gameId} ended in stalemate`);
+                    // Update Elo ratings for draw
+                    await updatePlayerRatings(game, null, true);
                   } else if (chess.isDraw()) {
                     game.endReason = 'draw';
                     game.result = 'draw';
                     game.winner = null;
                     console.log(`🤝 Game ${gameId} ended in draw`);
+                    // Update Elo ratings for draw
+                    await updatePlayerRatings(game, null, true);
                   }
                 }
                 
@@ -261,6 +338,8 @@ app.prepare().then(() => {
             game.endReason = 'resignation';
             // Winner is the opposite player
             game.winner = game.whitePlayer.toString() === userId ? game.blackPlayer : game.whitePlayer;
+            // Update Elo ratings
+            await updatePlayerRatings(game, game.winner, false);
             await game.save();
             console.log(`Game ${gameId} ended by resignation`);
           }
@@ -292,6 +371,8 @@ app.prepare().then(() => {
             game.endReason = 'draw';
             game.result = 'draw';
             game.winner = null;
+            // Update Elo ratings for draw
+            await updatePlayerRatings(game, null, true);
             await game.save();
             console.log(`Game ${gameId} ended in draw`);
           }
