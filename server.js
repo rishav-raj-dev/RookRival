@@ -240,7 +240,9 @@ app.prepare().then(() => {
           if (mongoose.connection.readyState === 1) {
             try {
               const GameModel = mongoose.connection.models.Game || require('./src/models/Game').default;
-              const game = await GameModel.findById(gameId);
+              const game = await GameModel.findById(gameId)
+                .populate('whitePlayer', 'username rating')
+                .populate('blackPlayer', 'username rating');
               if (game) {
                 game.moves.push(result.san);
                 game.fen = chess.fen();
@@ -257,11 +259,12 @@ app.prepare().then(() => {
                   if (chess.isCheckmate()) {
                     game.endReason = 'checkmate';
                     // Winner is the player who just moved (opposite of current turn)
-                    game.winner = chess.turn() === 'w' ? game.blackPlayer : game.whitePlayer;
+                    const winnerPlayer = chess.turn() === 'w' ? game.blackPlayer : game.whitePlayer;
+                    game.winner = winnerPlayer._id || winnerPlayer; // Extract _id if populated
                     game.result = chess.turn() === 'w' ? 'black' : 'white';
                     console.log(`🏆 Game ${gameId} ended by checkmate. Winner: ${game.result}, Status: ${game.status}`);
-                    // Update Elo ratings
-                    await updatePlayerRatings(game, game.winner, false);
+                    // Update Elo ratings (pass the full player object for rating calculation)
+                    await updatePlayerRatings(game, winnerPlayer, false);
                   } else if (chess.isStalemate()) {
                     game.endReason = 'stalemate';
                     game.result = 'draw';
@@ -331,15 +334,20 @@ app.prepare().then(() => {
         const mongoose = require('mongoose');
         if (mongoose.connection.readyState === 1) {
           const GameModel = mongoose.connection.models.Game || require('./src/models/Game').default;
-          const game = await GameModel.findById(gameId);
+          const game = await GameModel.findById(gameId)
+            .populate('whitePlayer', 'username rating')
+            .populate('blackPlayer', 'username rating');
           if (game) {
             game.status = 'completed';
             game.endedAt = new Date();
             game.endReason = 'resignation';
             // Winner is the opposite player
-            game.winner = game.whitePlayer.toString() === userId ? game.blackPlayer : game.whitePlayer;
-            // Update Elo ratings
-            await updatePlayerRatings(game, game.winner, false);
+            const winnerPlayer = game.whitePlayer.toString() === userId || game.whitePlayer._id?.toString() === userId 
+              ? game.blackPlayer 
+              : game.whitePlayer;
+            game.winner = winnerPlayer._id || winnerPlayer; // Extract _id if populated
+            // Update Elo ratings (pass the full player object for rating calculation)
+            await updatePlayerRatings(game, winnerPlayer, false);
             await game.save();
             console.log(`Game ${gameId} ended by resignation`);
           }
@@ -364,7 +372,9 @@ app.prepare().then(() => {
         const mongoose = require('mongoose');
         if (mongoose.connection.readyState === 1) {
           const GameModel = mongoose.connection.models.Game || require('./src/models/Game').default;
-          const game = await GameModel.findById(gameId);
+          const game = await GameModel.findById(gameId)
+            .populate('whitePlayer', 'username rating')
+            .populate('blackPlayer', 'username rating');
           if (game) {
             game.status = 'completed';
             game.endedAt = new Date();

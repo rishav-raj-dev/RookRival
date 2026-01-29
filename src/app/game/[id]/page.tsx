@@ -7,6 +7,7 @@ import { io, Socket } from 'socket.io-client';
 import { Chessboard } from 'react-chessboard';
 import { Chess } from 'chess.js';
 import { useAuthCheck } from '@/hooks/useAuthCheck';
+import { useAuthStore } from '@/store';
 import { Button } from '@/app/components/Button';
 import { Card, CardHeader, CardTitle, CardContent } from '@/app/components/Card';
 import { Clock, Flag, Handshake, ArrowLeft, Trophy } from 'lucide-react';
@@ -16,6 +17,7 @@ export default function GamePage() {
   const params = useParams();
   const router = useRouter();
   const { user, isLoading: authLoading } = useAuthCheck(); // Use the auth check hook
+  const { setUser } = useAuthStore(); // Get setUser to update user data
   const gameId = params.id as string;
 
   const [game, setGame] = useState<any>(null);
@@ -43,6 +45,19 @@ export default function GamePage() {
       return () => clearTimeout(timer);
     }
   }, [notification]);
+
+  // Function to refetch user data (to get updated rating after game ends)
+  const refetchUserData = useCallback(async () => {
+    try {
+      const response = await axios.get('/api/auth/me');
+      if (response.data.success) {
+        setUser(response.data.data.user);
+        console.log('✅ User data refreshed. New rating:', response.data.data.user.rating);
+      }
+    } catch (error) {
+      console.error('Failed to refresh user data:', error);
+    }
+  }, [setUser]);
 
   // Initialize socket connection and fetch game data
   useEffect(() => {
@@ -184,12 +199,16 @@ export default function GamePage() {
           
           return currentGame;
         });
+        // Refetch user data to get updated rating
+        refetchUserData();
       }
     });
 
     newSocket.on('game-over', (data) => {
       setGameOver(true);
       setGameResult(data);
+      // Refetch user data to get updated rating
+      refetchUserData();
     });
 
     newSocket.on('draw-offered', () => {
@@ -215,6 +234,8 @@ export default function GamePage() {
         }
         return currentGame;
       });
+      // Refetch user data to get updated rating
+      refetchUserData();
     });
 
     newSocket.on('draw-accepted', () => {
@@ -223,6 +244,8 @@ export default function GamePage() {
       setGameResult({ reason: 'draw', winner: null });
       setDrawOffered(false);
       setNotification({ message: 'Draw accepted. Game over!', type: 'info' });
+      // Refetch user data to get updated rating
+      refetchUserData();
     });
 
     newSocket.on('time-updated', (data) => {
