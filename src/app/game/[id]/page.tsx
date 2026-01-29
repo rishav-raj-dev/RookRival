@@ -1,0 +1,554 @@
+'use client';
+
+import { useEffect, useState, useCallback } from 'react';
+import { useParams, useRouter } from 'next/navigation';
+import axios from 'axios';
+import { io, Socket } from 'socket.io-client';
+import { Chessboard } from 'react-chessboard';
+import { Chess } from 'chess.js';
+import { useAuthCheck } from '@/hooks/useAuthCheck';
+import { Button } from '@/app/components/Button';
+import { Card, CardHeader, CardTitle, CardContent } from '@/app/components/Card';
+import { Clock, Flag, Handshake, ArrowLeft, Trophy } from 'lucide-react';
+import Link from 'next/link';
+
+export default function GamePage() {
+  const params = useParams();
+  const router = useRouter();
+  const { user, isLoading: authLoading } = useAuthCheck(); // Use the auth check hook
+  const gameId = params.id as string;
+
+  const [game, setGame] = useState<any>(null);
+  const [chess] = useState(new Chess());
+  const [fen, setFen] = useState('start');
+  const [socket, setSocket] = useState<Socket | null>(null);
+  const [whiteTime, setWhiteTime] = useState(0);
+  const [blackTime, setBlackTime] = useState(0);
+  const [currentTurn, setCurrentTurn] = useState<'w' | 'b'>('w');
+  const [gameOver, setGameOver] = useState(false);
+  const [gameResult, setGameResult] = useState<any>(null);
+  const [capturedPieces, setCapturedPieces] = useState({ white: [], black: [] });
+  const [drawOffered, setDrawOffered] = useState(false);
+  const [moveHistory, setMoveHistory] = useState<string[]>([]);
+  const [notification, setNotification] = useState<{ message: string; type: 'success' | 'info' | 'warning' | 'error' } | null>(null);
+
+  // Auto-hide notification after 3 seconds
+  useEffect(() => {
+    if (notification) {
+      const timer = setTimeout(() => setNotification(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [notification]);
+
+  // Initialize socket connection and fetch game data
+  useEffect(() => {
+    if (authLoading) return; // Wait for auth check
+    if (!user) {
+      router.push('/login');
+      return;
+    }
+
+    const fetchGame = async () => {
+      try {
+        const response = await axios.get(`/api/games/${gameId}`);
+        if (response.data.success) {
+          const gameData = response.data.data.game;
+          console.log('Game data loaded:', gameData);
+          setGame(gameData);
+          setWhiteTime(gameData.whiteTimeRemaining || 0);
+          setBlackTime(gameData.blackTimeRemaining || 0);
+          
+          // Load the FEN position from the database
+          if (gameData.fen) {
+            chess.load(gameData.fen);
+            setFen(gameData.fen);
+          }
+          
+          setCurrentTurn(chess.turn());
+          setCapturedPieces(gameData.capturedPieces || { white: [], black: [] });
+          setMoveHistory(gameData.moves || []);
+
+          if (gameData.status === 'completed') {
+            setGameOver(true);
+            setGameResult({
+              winner: gameData.winner,
+              reason: gameData.endReason,
+            });
+          }
+        }
+      } catch (error) {
+        console.error('Fetch game error:', error);
+        router.push('/dashboard');
+      }
+    };
+
+    fetchGame();
+
+    // Initialize Socket.io
+    const newSocket = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3000');
+    setSocket(newSocket);
+
+    newSocket.on('connect', () => {
+      console.log('Connected to socket server');
+      newSocket.emit('join-game', gameId);
+    });
+
+    newSocket.on('game-state', (data) => {
+      console.log('Game state received from server:', data);
+      // Only load the position if we don't already have the game data loaded
+      // This prevents overriding the already-loaded database state
+      setGame((currentGame: any) => {
+        if (!currentGame && data.fen) {
+          // Only update if game hasn't been loaded yet
+          chess.load(data.fen);
+          setFen(data.fen);
+          setCurrentTurn(data.turn);
+          
+          // Restore move history and captured pieces
+          if (data.moves && data.moves.length > 0) {
+            setMoveHistory(data.moves);
+            console.log('Restored move history from socket:', data.moves.length, 'moves');
+          }
+          if (data.capturedPieces) {
+            setCapturedPieces(data.capturedPieces);
+            console.log('Restored captured pieces from socket:', data.capturedPieces);
+          }
+          
+          // Restore timers
+          if (data.whiteTimeRemaining !== undefined) {
+            setWhiteTime(data.whiteTimeRemaining);
+          }
+          if (data.blackTimeRemaining !== undefined) {
+            setBlackTime(data.blackTimeRemaining);
+          }
+        }
+        return currentGame;
+      });
+    });
+
+    newSocket.on('move-made', (data) => {
+      console.log('Move received:', data);
+      console.log('Captured pieces:', data.capturedPieces);
+      console.log('Moves:', data.moves);
+      // Load the new position into the chess instance
+      chess.load(data.fen);
+      setFen(data.fen);
+      setCurrentTurn(data.turn);
+      if (data.capturedPieces) {
+        setCapturedPieces(data.capturedPieces);
+      }
+      if (data.moves) {
+        setMoveHistory(data.moves);
+      }
+      
+      // Check for game end conditions
+      if (data.gameOver) {
+        setGameOver(true);
+        if (data.isCheckmate) {
+          setGameResult({ reason: 'checkmate', winner: data.turn === 'w' ? 'black' : 'white' });
+        } else if (data.isStalemate) {
+          setGameResult({ reason: 'stalemate', winner: null });
+        } else if (data.isDraw) {
+          setGameResult({ reason: 'draw', winner: null });
+        }
+      }
+    });
+
+    newSocket.on('game-over', (data) => {
+      setGameOver(true);
+      setGameResult(data);
+    });
+
+    newSocket.on('draw-offered', () => {
+      setDrawOffered(true);
+      setNotification({ message: 'Opponent offers a draw', type: 'info' });
+    });
+
+    newSocket.on('player-resigned', ({ userId }) => {
+      console.log('Player resigned:', userId);
+      setGameOver(true);
+      setGame((currentGame: any) => {
+        if (!currentGame) return currentGame;
+        const resignedPlayerIsWhite = currentGame.whitePlayer._id === userId;
+        setGameResult({
+          reason: 'resignation',
+          winner: resignedPlayerIsWhite ? currentGame.blackPlayer : currentGame.whitePlayer,
+        });
+        const isCurrentUserResigned = userId === user?._id;
+        if (isCurrentUserResigned) {
+          setNotification({ message: 'You resigned. Game over.', type: 'info' });
+        } else {
+          setNotification({ message: 'Opponent resigned. You win!', type: 'success' });
+        }
+        return currentGame;
+      });
+    });
+
+    newSocket.on('draw-accepted', () => {
+      console.log('Draw accepted');
+      setGameOver(true);
+      setGameResult({ reason: 'draw', winner: null });
+      setDrawOffered(false);
+      setNotification({ message: 'Draw accepted. Game over!', type: 'info' });
+    });
+
+    newSocket.on('time-updated', (data) => {
+      setWhiteTime(data.whiteTime);
+      setBlackTime(data.blackTime);
+    });
+
+    newSocket.on('error', (message) => {
+      console.error('Socket error:', message);
+      setNotification({ message: message || 'An error occurred', type: 'error' });
+    });
+
+    return () => {
+      newSocket.disconnect();
+    };
+  }, [gameId, user, router, authLoading]);
+
+  // Timer logic
+  useEffect(() => {
+    if (!game || gameOver || game.status !== 'active') return;
+
+    const interval = setInterval(() => {
+      if (currentTurn === 'w') {
+        setWhiteTime((prev) => {
+          const newTime = Math.max(0, prev - 1);
+          // Emit time update every 5 seconds to save to database
+          if (socket && newTime % 5 === 0) {
+            socket.emit('time-update', { gameId, whiteTime: newTime, blackTime });
+          }
+          return newTime;
+        });
+      } else {
+        setBlackTime((prev) => {
+          const newTime = Math.max(0, prev - 1);
+          // Emit time update every 5 seconds to save to database
+          if (socket && newTime % 5 === 0) {
+            socket.emit('time-update', { gameId, whiteTime, blackTime: newTime });
+          }
+          return newTime;
+        });
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [game, gameId, currentTurn, gameOver, socket, whiteTime, blackTime]);
+
+  const onDrop = useCallback((sourceSquare: string, targetSquare: string) => {
+    if (gameOver || !game || game.status !== 'active') return false;
+
+    // Check if it's the player's turn
+    const isWhitePlayer = game.whitePlayer._id === user?._id;
+    const isBlackPlayer = game.blackPlayer._id === user?._id;
+    
+    if ((currentTurn === 'w' && !isWhitePlayer) || (currentTurn === 'b' && !isBlackPlayer)) {
+      return false;
+    }
+
+    try {
+      const move = chess.move({
+        from: sourceSquare,
+        to: targetSquare,
+        promotion: 'q', // Always promote to queen for simplicity
+      });
+
+      if (move === null) return false;
+
+      setFen(chess.fen());
+      setCurrentTurn(chess.turn());
+
+      // Emit move to server
+      if (socket) {
+        socket.emit('make-move', {
+          gameId,
+          move: { from: sourceSquare, to: targetSquare, promotion: 'q' },
+        });
+      }
+
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }, [chess, currentTurn, game, gameId, gameOver, socket, user]);
+
+  const handleResign = async () => {
+    if (socket && user && !gameOver) {
+      console.log('Resigning game:', gameId);
+      socket.emit('resign', { gameId, userId: user._id });
+      
+      // Update local state immediately
+      setGameOver(true);
+      const isWhitePlayer = game?.whitePlayer._id === user._id;
+      setGameResult({
+        reason: 'resignation',
+        winner: isWhitePlayer ? game.blackPlayer : game.whitePlayer,
+      });
+    }
+  };
+
+  const handleOfferDraw = () => {
+    if (socket && !gameOver) {
+      socket.emit('offer-draw', { gameId, userId: user?._id });
+      setNotification({ message: 'Draw offer sent to opponent', type: 'info' });
+    }
+  };
+
+  const handleAcceptDraw = () => {
+    if (socket && !gameOver) {
+      console.log('Accepting draw offer');
+      socket.emit('accept-draw', { gameId });
+      
+      // Update local state immediately
+      setGameOver(true);
+      setGameResult({ reason: 'draw', winner: null });
+      setDrawOffered(false);
+    }
+  };
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  if (!game) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <p>Loading game...</p>
+      </div>
+    );
+  }
+
+  const isWhitePlayer = game.whitePlayer._id === user?._id;
+  const playerColor = isWhitePlayer ? 'white' : 'black';
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      {/* Notification Toast */}
+      {notification && (
+        <div className="fixed top-4 right-4 z-50 animate-slide-in">
+          <div className={`px-6 py-4 rounded-lg shadow-lg ${
+            notification.type === 'success' ? 'bg-green-500 text-white' :
+            notification.type === 'info' ? 'bg-blue-500 text-white' :
+            notification.type === 'warning' ? 'bg-yellow-500 text-white' :
+            'bg-red-500 text-white'
+          }`}>
+            {notification.message}
+          </div>
+        </div>
+      )}
+
+      <nav className="bg-white shadow-sm border-b">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex items-center h-16">
+            <Link href="/dashboard">
+              <Button variant="ghost" size="sm">
+                <ArrowLeft className="h-4 w-4 mr-2" />
+                Back
+              </Button>
+            </Link>
+          </div>
+        </div>
+      </nav>
+
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          {/* Left Column - Opponent Info */}
+          <div className="lg:col-span-2">
+            <Card className="mb-4">
+              <CardContent className="p-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div>
+                      <p className="font-semibold">
+                        {isWhitePlayer ? game.blackPlayer.username : game.whitePlayer.username}
+                      </p>
+                      <p className="text-sm text-gray-600 flex items-center gap-1">
+                        <Trophy className="h-3 w-3" />
+                        {isWhitePlayer ? game.blackPlayer.rating : game.whitePlayer.rating}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 text-lg font-bold">
+                    <Clock className="h-5 w-5" />
+                    {formatTime(isWhitePlayer ? blackTime : whiteTime)}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Chess Board */}
+            <div className="aspect-square max-w-2xl mx-auto">
+              <Chessboard
+                position={fen}
+                onPieceDrop={onDrop}
+                boardOrientation={playerColor}
+                customBoardStyle={{
+                  borderRadius: '8px',
+                  boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+                }}
+              />
+            </div>
+
+            {/* Player Info */}
+            <Card className="mt-4">
+              <CardContent className="p-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div>
+                      <p className="font-semibold">{user?.username} (You)</p>
+                      <p className="text-sm text-gray-600 flex items-center gap-1">
+                        <Trophy className="h-3 w-3" />
+                        {user?.rating}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 text-lg font-bold">
+                    <Clock className="h-5 w-5" />
+                    {formatTime(isWhitePlayer ? whiteTime : blackTime)}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Right Column - Game Controls & Info */}
+          <div className="space-y-4">
+            {/* Game Status */}
+            {gameOver && gameResult && (
+              <Card className="bg-blue-50 border-blue-200">
+                <CardHeader>
+                  <CardTitle className="text-center">Game Over</CardTitle>
+                </CardHeader>
+                <CardContent className="text-center">
+                  {gameResult.winner ? (
+                    <p className="text-lg font-semibold">
+                      {gameResult.winner._id === user?._id ? '🎉 You won!' : 'You lost'}
+                    </p>
+                  ) : (
+                    <p className="text-lg font-semibold">Draw</p>
+                  )}
+                  <p className="text-sm text-gray-600 mt-2">
+                    By {gameResult.reason}
+                  </p>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Draw Offer */}
+            {drawOffered && !gameOver && (
+              <Card className="bg-yellow-50 border-yellow-200">
+                <CardContent className="p-4">
+                  <p className="text-center font-semibold mb-3">
+                    Opponent offers a draw
+                  </p>
+                  <div className="flex gap-2">
+                    <Button onClick={handleAcceptDraw} className="flex-1">
+                      Accept
+                    </Button>
+                    <Button
+                      onClick={() => setDrawOffered(false)}
+                      variant="outline"
+                      className="flex-1"
+                    >
+                      Decline
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Game Controls */}
+            {!gameOver && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Game Controls</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  <Button onClick={handleOfferDraw} className="w-full" variant="outline">
+                    <Handshake className="h-4 w-4 mr-2" />
+                    Offer Draw
+                  </Button>
+                  <Button onClick={handleResign} className="w-full" variant="destructive">
+                    <Flag className="h-4 w-4 mr-2" />
+                    Resign
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Move History */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Move History</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="max-h-64 overflow-y-auto">
+                  {moveHistory.length === 0 ? (
+                    <p className="text-gray-500 text-sm text-center py-4">
+                      No moves yet
+                    </p>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-2">
+                      {moveHistory.map((move, index) => (
+                        <div key={index} className="text-sm">
+                          <span className="text-gray-500">{Math.floor(index / 2) + 1}.</span>{' '}
+                          {move}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Captured Pieces */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Captured Pieces</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  <div>
+                    <p className="text-sm font-semibold mb-1">White captured:</p>
+                    <div className="flex flex-wrap gap-1">
+                      {capturedPieces.white.map((piece, idx) => (
+                        <span key={idx} className="text-2xl">
+                          {getPieceSymbol(piece, 'b')}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold mb-1">Black captured:</p>
+                    <div className="flex flex-wrap gap-1">
+                      {capturedPieces.black.map((piece, idx) => (
+                        <span key={idx} className="text-2xl">
+                          {getPieceSymbol(piece, 'w')}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}
+
+function getPieceSymbol(piece: string, color: string) {
+  const symbols: any = {
+    p: color === 'w' ? '♙' : '♟',
+    n: color === 'w' ? '♘' : '♞',
+    b: color === 'w' ? '♗' : '♝',
+    r: color === 'w' ? '♖' : '♜',
+    q: color === 'w' ? '♕' : '♛',
+    k: color === 'w' ? '♔' : '♚',
+  };
+  return symbols[piece] || piece;
+}
