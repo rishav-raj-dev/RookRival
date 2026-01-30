@@ -1,4 +1,4 @@
-# 🚀 Quick Start Guide - Chess App
+# 🚀 Quick Start Guide - RookRival
 
 ## Get Started in 3 Steps!
 

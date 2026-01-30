@@ -139,7 +139,7 @@ export default function DashboardPage() {
       <nav className="bg-white shadow-sm border-b">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
-            <h1 className="text-2xl font-bold">Chess App</h1>
+            <h1 className="text-2xl font-bold">RookRival</h1>
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2">
                 <Trophy className="h-5 w-5 text-yellow-500" />

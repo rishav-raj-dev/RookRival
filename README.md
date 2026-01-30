@@ -1,4 +1,4 @@
-# Chess App - Full-Stack Real-Time Chess Application
+# RookRival - Full-Stack Real-Time Chess Application
 
 A modern, full-stack chess application built with Next.js 14, MongoDB, Socket.io, and TypeScript. Play chess with friends or random opponents with real-time gameplay, ELO ratings, and match history.
 
