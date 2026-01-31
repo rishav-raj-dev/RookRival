@@ -274,11 +274,6 @@ export default function HistoryPage() {
                     <p className="text-sm text-gray-600">Time Control</p>
                     <p className="font-semibold capitalize">{selectedGame.timeControl.type}</p>
                   </div>
-
-                  <div>
-                    <p className="text-sm text-gray-600">Date</p>
-                    <p className="font-semibold">{formatDate(selectedGame.endedAt)}</p>
-                  </div>
                 </CardContent>
               </Card>
 
