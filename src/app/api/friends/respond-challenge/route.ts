@@ -116,7 +116,7 @@ export async function POST(request: NextRequest) {
         gameId: game._id.toString(),
         challengerId: challenge.challenger.toString(),
       },
-      message: 'Challenge accepted',
+      message: 'Challenge accepted by ' + authUser.username,
     });
   } catch (error) {
     console.error('Respond to challenge error:', error);

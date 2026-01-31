@@ -109,11 +109,20 @@ export default function GamePage() {
 
     newSocket.on('connect', () => {
       console.log('Connected to socket server');
-      newSocket.emit('join-game', gameId);
+      newSocket.emit('join-game', { gameId, userId: user._id });
     });
 
     newSocket.on('game-state', (data) => {
       console.log('Game state received from server:', data);
+      
+      // Sync timers from database immediately
+      if (data.whiteTimeRemaining !== undefined) {
+        setWhiteTime(data.whiteTimeRemaining);
+      }
+      if (data.blackTimeRemaining !== undefined) {
+        setBlackTime(data.blackTimeRemaining);
+      }
+      
       // Always check and update game over state from the socket data
       // This ensures the state is correct even after a refresh
       if (data.status === 'completed' || data.gameOver) {
@@ -127,35 +136,27 @@ export default function GamePage() {
         }
       }
       
-      // Only load the position if we don't already have the game data loaded
-      // This prevents overriding the already-loaded database state
-      setGame((currentGame: any) => {
-        if (!currentGame && data.fen) {
-          // Only update if game hasn't been loaded yet
-          chess.load(data.fen);
-          setFen(data.fen);
-          setCurrentTurn(data.turn);
-          
-          // Restore move history and captured pieces
-          if (data.moves && data.moves.length > 0) {
-            setMoveHistory(data.moves);
-            console.log('Restored move history from socket:', data.moves.length, 'moves');
-          }
-          if (data.capturedPieces) {
-            setCapturedPieces(data.capturedPieces);
-            console.log('Restored captured pieces from socket:', data.capturedPieces);
-          }
-          
-          // Restore timers
-          if (data.whiteTimeRemaining !== undefined) {
-            setWhiteTime(data.whiteTimeRemaining);
-          }
-          if (data.blackTimeRemaining !== undefined) {
-            setBlackTime(data.blackTimeRemaining);
-          }
+      // Always update position from socket to ensure sync
+      if (data.fen) {
+        chess.load(data.fen);
+        setFen(data.fen);
+        setCurrentTurn(data.turn);
+      }
+      
+      // Update game data if provided
+      if (data.gameData) {
+        setGame(data.gameData);
+        
+        // Restore move history and captured pieces
+        if (data.gameData.moves && data.gameData.moves.length > 0) {
+          setMoveHistory(data.gameData.moves);
+          console.log('Restored move history from socket:', data.gameData.moves.length, 'moves');
         }
-        return currentGame;
-      });
+        if (data.gameData.capturedPieces) {
+          setCapturedPieces(data.gameData.capturedPieces);
+          console.log('Restored captured pieces from socket:', data.gameData.capturedPieces);
+        }
+      }
     });
 
     newSocket.on('move-made', (data) => {
@@ -253,15 +254,37 @@ export default function GamePage() {
       setBlackTime(data.blackTime);
     });
 
-    newSocket.on('error', (message) => {
-      console.error('Socket error:', message);
-      setNotification({ message: message || 'An error occurred', type: 'error' });
+    newSocket.on('time-sync', (data) => {
+      setWhiteTime(data.whiteTime);
+      setBlackTime(data.blackTime);
+    });
+
+    newSocket.on('error', (error) => {
+      console.error('Socket error:', error);
+      const errorMessage = typeof error === 'string' ? error : error?.message || 'An error occurred';
+      // Only show error notification if it's not a "game not found in memory" error
+      // since we auto-recreate the game
+      if (!errorMessage.includes('Game not found in memory')) {
+        setNotification({ message: errorMessage, type: 'error' });
+      }
     });
 
     return () => {
       newSocket.disconnect();
     };
   }, [gameId, user, router, authLoading]);
+
+  // Periodic sync: Request current game state every 10 seconds to ensure sync
+  useEffect(() => {
+    if (!socket || !gameId || gameOver) return;
+
+    const syncInterval = setInterval(() => {
+      // Request fresh game state to sync times
+      socket.emit('request-sync', { gameId });
+    }, 10000); // Every 10 seconds
+
+    return () => clearInterval(syncInterval);
+  }, [socket, gameId, gameOver]);
 
   // Timer logic
   useEffect(() => {
@@ -271,8 +294,8 @@ export default function GamePage() {
       if (currentTurn === 'w') {
         setWhiteTime((prev) => {
           const newTime = Math.max(0, prev - 1);
-          // Emit time update every 5 seconds to save to database
-          if (socket && newTime % 5 === 0) {
+          // Emit time update every 3 seconds to save to database and sync all clients
+          if (socket && newTime % 3 === 0) {
             socket.emit('time-update', { gameId, whiteTime: newTime, blackTime });
           }
           return newTime;
@@ -280,8 +303,8 @@ export default function GamePage() {
       } else {
         setBlackTime((prev) => {
           const newTime = Math.max(0, prev - 1);
-          // Emit time update every 5 seconds to save to database
-          if (socket && newTime % 5 === 0) {
+          // Emit time update every 3 seconds to save to database and sync all clients
+          if (socket && newTime % 3 === 0) {
             socket.emit('time-update', { gameId, whiteTime, blackTime: newTime });
           }
           return newTime;

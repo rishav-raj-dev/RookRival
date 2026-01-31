@@ -66,7 +66,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       data: { challenge: populatedChallenge },
-      message: 'Challenge sent successfully',
+      message: 'Challenge by ' + populatedChallenge.challenger.username,
     });
   } catch (error) {
     console.error('Challenge friend error:', error);

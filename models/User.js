@@ -1,21 +1,7 @@
-import mongoose, { Schema, Document } from 'mongoose';
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
 
-export interface IUser extends Document {
-  username: string;
-  password: string;
-  rating: number;
-  friends: mongoose.Types.ObjectId[];
-  friendRequests: {
-    from: mongoose.Types.ObjectId;
-    status: 'pending' | 'accepted' | 'rejected';
-    createdAt: Date;
-  }[];
-  sentFriendRequests: mongoose.Types.ObjectId[];
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-const UserSchema: Schema = new Schema({
+const UserSchema = new Schema({
   username: {
     type: String,
     required: true,
@@ -64,4 +50,4 @@ const UserSchema: Schema = new Schema({
 // Note: username already has unique index from schema definition
 UserSchema.index({ rating: 1 });
 
-export default mongoose.models.User || mongoose.model<IUser>('User', UserSchema);
+module.exports = mongoose.models.User || mongoose.model('User', UserSchema);

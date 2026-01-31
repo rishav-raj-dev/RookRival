@@ -1,4 +1,6 @@
 import mongoose, { Schema, Document } from 'mongoose';
+// Import User model to ensure it's registered for populate
+import './User';
 
 export interface IChallenge extends Document {
   challenger: mongoose.Types.ObjectId;

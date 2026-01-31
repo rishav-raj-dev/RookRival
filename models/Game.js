@@ -1,34 +1,7 @@
-import mongoose, { Schema, Document } from 'mongoose';
-// Import User model to ensure it's registered for populate
-import './User';
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
 
-export interface IGame extends Document {
-  whitePlayer: mongoose.Types.ObjectId;
-  blackPlayer: mongoose.Types.ObjectId;
-  winner: mongoose.Types.ObjectId | null;
-  result: 'white' | 'black' | 'draw' | 'ongoing' | 'abandoned';
-  timeControl: {
-    type: '10min' | '30min' | '60min' | 'custom' | 'unlimited';
-    minutes?: number;
-  };
-  moves: string[]; // Array of moves in algebraic notation
-  pgn: string; // Complete game in PGN format
-  fen: string; // Current board position
-  whiteTimeRemaining: number; // In seconds
-  blackTimeRemaining: number; // In seconds
-  status: 'waiting' | 'active' | 'completed';
-  endReason?: 'checkmate' | 'resignation' | 'timeout' | 'draw' | 'stalemate' | 'abandoned';
-  capturedPieces: {
-    white: string[];
-    black: string[];
-  };
-  startedAt?: Date;
-  endedAt?: Date;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-const GameSchema: Schema = new Schema({
+const GameSchema = new Schema({
   whitePlayer: {
     type: Schema.Types.ObjectId,
     ref: 'User',
@@ -69,15 +42,15 @@ const GameSchema: Schema = new Schema({
   },
   fen: {
     type: String,
-    default: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1', // Starting position
+    default: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
   },
   whiteTimeRemaining: {
     type: Number,
-    required: true,
+    default: 600,
   },
   blackTimeRemaining: {
     type: Number,
-    required: true,
+    default: 600,
   },
   status: {
     type: String,
@@ -113,4 +86,4 @@ GameSchema.index({ whitePlayer: 1, createdAt: -1 });
 GameSchema.index({ blackPlayer: 1, createdAt: -1 });
 GameSchema.index({ status: 1 });
 
-export default mongoose.models.Game || mongoose.model<IGame>('Game', GameSchema);
+module.exports = mongoose.models.Game || mongoose.model('Game', GameSchema);

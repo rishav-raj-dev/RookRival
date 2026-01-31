@@ -7,6 +7,10 @@ const { Server } = require('socket.io');
 const { Chess } = require('chess.js');
 const mongoose = require('mongoose');
 
+// Load CommonJS models for socket handlers
+const User = require('./models/User');
+const Game = require('./models/Game');
+
 const dev = process.env.NODE_ENV !== 'production';
 const hostname = 'localhost';
 const port = parseInt(process.env.PORT || '3000', 10);
@@ -55,7 +59,7 @@ function calculateEloRating(winnerRating, loserRating, isDraw = false, kFactor =
 // Update player ratings after game ends
 async function updatePlayerRatings(game, winner, isDraw = false) {
   try {
-    const UserModel = mongoose.connection.models.User || require('./src/models/User').default;
+    const UserModel = User;
     const whiteUser = await UserModel.findById(game.whitePlayer._id || game.whitePlayer);
     const blackUser = await UserModel.findById(game.blackPlayer._id || game.blackPlayer);
 
@@ -117,40 +121,42 @@ app.prepare().then(() => {
     cors: {
       origin: process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
       methods: ['GET', 'POST'],
+      credentials: true
     },
+    transports: ['websocket', 'polling']
   });
 
   io.on('connection', (socket) => {
-    console.log('✅ Client connected:', socket.id);
+    console.log('🔌 Client connected:', socket.id);
 
     // User joins their personal room for notifications
     socket.on('join-user', (userId) => {
-      socket.join(`user:${userId}`);
+      socket.join(`${userId}`);
       console.log(`User ${userId} joined personal room`);
     });
 
     // Friend request notifications
     socket.on('send-friend-request', ({ targetUserId }) => {
-      io.to(`user:${targetUserId}`).emit('friend-request-received');
+      io.to(`${targetUserId}`).emit('friend-request-received');
       console.log(`Friend request notification sent to user ${targetUserId}`);
     });
 
-    socket.on('friend-request-response', ({ targetUserId, action }) => {
+    socket.on('friend-request-response', ({ targetUserId, action, message }) => {
       const event = action === 'accept' ? 'friend-request-accepted' : 'friend-request-rejected';
-      io.to(`user:${targetUserId}`).emit(event);
+      io.to(`${targetUserId}`).emit(event, {message});
       console.log(`Friend request ${action} notification sent to user ${targetUserId}`);
     });
 
     // Send challenge notification
-    socket.on('send-challenge', async ({ challengeId, challengedUserId }) => {
-      io.to(`user:${challengedUserId}`).emit('challenge-received', { challengeId });
+    socket.on('send-challenge', async ({ challengeId, challengedUserId, message }) => {
+      io.to(`${challengedUserId}`).emit('challenge-received', { message });
       console.log(`Challenge ${challengeId} sent to user ${challengedUserId}`);
     });
 
     // Notify when challenge is accepted/rejected
     socket.on('challenge-response', async ({ challengerId, action, gameId }) => {
       const event = action === 'accept' ? 'challenge-accepted' : 'challenge-rejected';
-      const roomName = `user:${challengerId}`;
+      const roomName = `${challengerId}`;
       const socketsInRoom = await io.in(roomName).allSockets();
       console.log(`📢 Emitting ${event} to ${roomName}`);
       console.log(`   - Sockets in room: ${socketsInRoom.size}`);
@@ -159,266 +165,323 @@ app.prepare().then(() => {
       console.log(`✅ Challenge ${action} notification sent to challenger ${challengerId}`);
     });
 
-    socket.on('join-game', async (gameId) => {
-      socket.join(gameId);
-      
+    socket.on('join-game', async ({ gameId, userId }) => {
       try {
-        const mongoose = require('mongoose');
-        let fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'; // Default starting position
-        let gameData = null;
-        
-        // Try to get game state from database
-        if (mongoose.connection.readyState === 1) {
-          const GameModel = mongoose.connection.models.Game || require('./src/models/Game').default;
-          gameData = await GameModel.findById(gameId)
-            .populate('whitePlayer', 'username rating')
-            .populate('blackPlayer', 'username rating');
-          
-          if (gameData && gameData.fen) {
-            fen = gameData.fen;
-            console.log(`Loading game ${gameId} from DB with FEN: ${fen.substring(0, 20)}...`);
-          }
+        const GameModel = Game;
+        const gameData = await GameModel.findById(gameId)
+          .populate('whitePlayer', 'username rating')
+          .populate('blackPlayer', 'username rating');
+
+        if (!gameData) {
+          socket.emit('error', { message: 'Game not found' });
+          return;
         }
-        
-        // Always update or create the chess instance with the current FEN
-        const chess = new Chess(fen);
-        games.set(gameId, chess);
-        
-        // Send complete game state
+
+        socket.join(gameId);
+
+        if (!games.has(gameId)) {
+          const chess = new Chess();
+          if (gameData.moves && gameData.moves.length > 0) {
+            gameData.moves.forEach(move => chess.move(move));
+          }
+          games.set(gameId, { chess, players: new Set() });
+        }
+
+        const game = games.get(gameId);
+        game.players.add(userId);
+
         const isGameOver = gameData?.status === 'completed';
-        socket.emit('game-state', {
-          fen: chess.fen(),
-          turn: chess.turn(),
-          gameOver: isGameOver,
-          moves: gameData?.moves || [],
-          capturedPieces: gameData?.capturedPieces || { white: [], black: [] },
-          whiteTimeRemaining: gameData?.whiteTimeRemaining || 600,
-          blackTimeRemaining: gameData?.blackTimeRemaining || 600,
-          status: gameData?.status,
-          winner: gameData?.winner,
-          endReason: gameData?.endReason,
-        });
-
-        console.log(`User joined game: ${gameId}, Moves: ${gameData?.moves?.length || 0}, Status: ${gameData?.status}`);
-      } catch (error) {
-        console.error('Join game error:', error);
         
-        // Fallback: create default chess instance
-        const chess = new Chess();
-        games.set(gameId, chess);
-
-        socket.emit('game-state', {
-          fen: chess.fen(),
-          turn: chess.turn(),
-          gameOver: chess.isGameOver(),
-          moves: [],
-          capturedPieces: { white: [], black: [] },
+        io.to(gameId).emit('game-state', {
+          fen: game.chess.fen(),
+          turn: game.chess.turn(),
+          isCheck: game.chess.isCheck(),
+          isCheckmate: game.chess.isCheckmate(),
+          isStalemate: game.chess.isStalemate(),
+          isDraw: game.chess.isDraw(),
+          isGameOver: isGameOver,
+          whiteTimeRemaining: gameData.whiteTimeRemaining || 0,
+          blackTimeRemaining: gameData.blackTimeRemaining || 0,
+          gameData: gameData
         });
 
-        console.log(`User joined game: ${gameId} (fallback)`);
+        console.log(`✅ User ${userId} joined game ${gameId}`);
+      } catch (error) {
+        console.error('Error joining game:', error);
+        socket.emit('error', { message: 'Failed to join game' });
       }
     });
 
-    socket.on('make-move', async ({ gameId, move }) => {
-      const chess = games.get(gameId);
-      if (!chess) {
-        socket.emit('error', 'Game not found');
-        return;
-      }
-
+    socket.on('make-move', async ({ gameId, move, userId }) => {
       try {
-        const result = chess.move(move);
-        if (result) {
-          console.log('Move made:', result.san);
-          
-          // Build the move history from the chess instance
-          const moveHistory = chess.history();
-          console.log('Move history:', moveHistory);
-          
-          // Update the database with the move
-          const mongoose = require('mongoose');
-          let capturedPieces = { white: [], black: [] };
-          
-          if (mongoose.connection.readyState === 1) {
-            try {
-              const GameModel = mongoose.connection.models.Game || require('./src/models/Game').default;
-              const game = await GameModel.findById(gameId)
-                .populate('whitePlayer', 'username rating')
-                .populate('blackPlayer', 'username rating');
-              if (game) {
-                game.moves.push(result.san);
-                game.fen = chess.fen();
-                if (result.captured) {
-                  const color = result.color === 'w' ? 'white' : 'black';
-                  game.capturedPieces[color].push(result.captured);
-                }
-                
-                // Check if game is over (checkmate, stalemate, draw)
-                if (chess.isGameOver()) {
-                  game.status = 'completed';
-                  game.endedAt = new Date();
-                  
-                  if (chess.isCheckmate()) {
-                    game.endReason = 'checkmate';
-                    // Winner is the player who just moved (opposite of current turn)
-                    const winnerPlayer = chess.turn() === 'w' ? game.blackPlayer : game.whitePlayer;
-                    game.winner = winnerPlayer._id || winnerPlayer; // Extract _id if populated
-                    game.result = chess.turn() === 'w' ? 'black' : 'white';
-                    console.log(`🏆 Game ${gameId} ended by checkmate. Winner: ${game.result}, Status: ${game.status}`);
-                    // Update Elo ratings (pass the full player object for rating calculation)
-                    await updatePlayerRatings(game, winnerPlayer, false);
-                  } else if (chess.isStalemate()) {
-                    game.endReason = 'stalemate';
-                    game.result = 'draw';
-                    game.winner = null;
-                    console.log(`🤝 Game ${gameId} ended in stalemate`);
-                    // Update Elo ratings for draw
-                    await updatePlayerRatings(game, null, true);
-                  } else if (chess.isDraw()) {
-                    game.endReason = 'draw';
-                    game.result = 'draw';
-                    game.winner = null;
-                    console.log(`🤝 Game ${gameId} ended in draw`);
-                    // Update Elo ratings for draw
-                    await updatePlayerRatings(game, null, true);
-                  }
-                }
-                
-                await game.save();
-                console.log(`💾 Game saved. Status: ${game.status}, EndReason: ${game.endReason}`);
-                capturedPieces = game.capturedPieces;
-                
-                console.log('Game updated in DB. Moves:', game.moves.length);
-                io.to(gameId).emit('move-made', {
-                  move: result,
-                  fen: chess.fen(),
-                  turn: chess.turn(),
-                  gameOver: chess.isGameOver(),
-                  isCheckmate: chess.isCheckmate(),
-                  isStalemate: chess.isStalemate(),
-                  isDraw: chess.isDraw(),
-                  capturedPieces: game.capturedPieces,
-                  moves: game.moves,
-                });
-                return;
-              }
-            } catch (dbError) {
-              console.error('Database error:', dbError);
-            }
-          }
-          
-          // Fallback: send move without DB data
-          io.to(gameId).emit('move-made', {
-            move: result,
-            fen: chess.fen(),
-            turn: chess.turn(),
-            gameOver: chess.isGameOver(),
-            isCheckmate: chess.isCheckmate(),
-            isStalemate: chess.isStalemate(),
-            isDraw: chess.isDraw(),
-            capturedPieces,
-            moves: moveHistory,
-          });
-        } else {
-          socket.emit('error', 'Invalid move');
+        const GameModel = Game;
+        const gameData = await GameModel.findById(gameId)
+          .populate('whitePlayer', 'username rating')
+          .populate('blackPlayer', 'username rating');
+
+        if (!gameData || gameData.status !== 'active') {
+          socket.emit('error', { message: 'Game is not active' });
+          return;
         }
+        
+        // Get or recreate game from memory
+        let game = games.get(gameId);
+        if (!game) {
+          const chess = new Chess();
+          if (gameData.moves && gameData.moves.length > 0) {
+            gameData.moves.forEach(m => chess.move(m));
+          }
+          game = { chess, players: new Set() };
+          games.set(gameId, game);
+          console.log('♻️ Recreated game in memory:', gameId);
+        }
+
+        if (!gameData.whitePlayer || !gameData.blackPlayer) {
+          socket.emit('error', { message: 'Game data is incomplete' });
+          return;
+        }
+
+        const whitePlayerId = (gameData.whitePlayer._id || gameData.whitePlayer).toString();
+        const blackPlayerId = (gameData.blackPlayer._id || gameData.blackPlayer).toString();
+        const userIdStr = userId.toString();
+        const userColor = whitePlayerId === userIdStr ? 'w' : 'b';
+        
+        console.log(`🎮 Move attempt - User: ${userIdStr}, White: ${whitePlayerId}, Black: ${blackPlayerId}, Color: ${userColor}, Turn: ${game.chess.turn()}`);
+        
+        if (game.chess.turn() !== userColor) {
+          socket.emit('error', { message: 'Not your turn' });
+          return;
+        }
+
+        const result = game.chess.move(move);
+        if (!result) {
+          socket.emit('error', { message: 'Invalid move' });
+          return;
+        }
+
+        gameData.moves.push(move);
+        gameData.currentFen = game.chess.fen();
+
+        if (game.chess.isGameOver()) {
+          gameData.status = 'completed';
+          
+          if (game.chess.isCheckmate()) {
+            const winnerPlayer = game.chess.turn() === 'w' ? gameData.blackPlayer : gameData.whitePlayer;
+            gameData.winner = winnerPlayer._id || winnerPlayer;
+            gameData.result = game.chess.turn() === 'w' ? 'black' : 'white';
+            
+            await updatePlayerRatings(gameData, winnerPlayer, false);
+          } else if (game.chess.isDraw() || game.chess.isStalemate()) {
+            gameData.result = 'draw';
+            await updatePlayerRatings(gameData, null, true);
+          }
+        }
+
+        await gameData.save();
+
+        const isGameOver = gameData?.status === 'completed';
+
+        io.to(gameId).emit('move-made', {
+          move: result,
+          fen: game.chess.fen(),
+          turn: game.chess.turn(),
+          isCheck: game.chess.isCheck(),
+          isCheckmate: game.chess.isCheckmate(),
+          isStalemate: game.chess.isStalemate(),
+          isDraw: game.chess.isDraw(),
+          isGameOver: isGameOver,
+        });
+
+        if (game.chess.isCheckmate()) {
+          const winner = game.chess.turn() === 'w' ? 'black' : 'white';
+          io.to(gameId).emit('game-over', { 
+            winner, 
+            reason: 'checkmate',
+            gameData: await GameModel.findById(gameId)
+              .populate('whitePlayer', 'username rating')
+              .populate('blackPlayer', 'username rating')
+          });
+        } else if (game.chess.isDraw()) {
+          io.to(gameId).emit('game-over', { 
+            winner: null, 
+            reason: 'draw',
+            gameData: await GameModel.findById(gameId)
+              .populate('whitePlayer', 'username rating')
+              .populate('blackPlayer', 'username rating')
+          });
+        } else if (game.chess.isStalemate()) {
+          io.to(gameId).emit('game-over', { 
+            winner: null, 
+            reason: 'stalemate',
+            gameData: await GameModel.findById(gameId)
+              .populate('whitePlayer', 'username rating')
+              .populate('blackPlayer', 'username rating')
+          });
+        }
+
+        console.log(`♟️ Move made in game ${gameId}:`, move);
       } catch (error) {
-        console.error('Move error:', error);
-        socket.emit('error', 'Invalid move');
+        console.error('Error making move:', error);
+        socket.emit('error', { message: 'Failed to make move' });
       }
     });
 
     socket.on('resign', async ({ gameId, userId }) => {
-      console.log(`Player ${userId} resigned from game ${gameId}`);
-      
-      // Update game in database
       try {
-        const mongoose = require('mongoose');
-        if (mongoose.connection.readyState === 1) {
-          const GameModel = mongoose.connection.models.Game || require('./src/models/Game').default;
-          const game = await GameModel.findById(gameId)
-            .populate('whitePlayer', 'username rating')
-            .populate('blackPlayer', 'username rating');
-          if (game) {
-            game.status = 'completed';
-            game.endedAt = new Date();
-            game.endReason = 'resignation';
-            // Winner is the opposite player
-            const winnerPlayer = game.whitePlayer.toString() === userId || game.whitePlayer._id?.toString() === userId 
-              ? game.blackPlayer 
-              : game.whitePlayer;
-            game.winner = winnerPlayer._id || winnerPlayer; // Extract _id if populated
-            // Update Elo ratings (pass the full player object for rating calculation)
-            await updatePlayerRatings(game, winnerPlayer, false);
-            await game.save();
-            console.log(`Game ${gameId} ended by resignation`);
-          }
+        const GameModel = Game;
+        const gameData = await GameModel.findById(gameId)
+          .populate('whitePlayer', 'username rating')
+          .populate('blackPlayer', 'username rating');
+
+        if (!gameData || gameData.status !== 'active') {
+          socket.emit('error', { message: 'Game is not active' });
+          return;
         }
+
+        const resigningPlayer = gameData.whitePlayer._id.toString() === userId ? 'white' : 'black';
+        const winnerPlayer = resigningPlayer === 'white' ? gameData.blackPlayer : gameData.whitePlayer;
+
+        gameData.status = 'completed';
+        gameData.result = resigningPlayer === 'white' ? 'black' : 'white';
+        gameData.winner = winnerPlayer._id || winnerPlayer;
+
+        await updatePlayerRatings(gameData, winnerPlayer, false);
+        await gameData.save();
+
+        io.to(gameId).emit('player-resigned', {
+          resignedPlayer: resigningPlayer,
+          winner: gameData.result,
+          gameData: await GameModel.findById(gameId)
+            .populate('whitePlayer', 'username rating')
+            .populate('blackPlayer', 'username rating')
+        });
+
+        console.log(`🏳️ Player ${userId} resigned in game ${gameId}`);
       } catch (error) {
-        console.error('Error updating game on resignation:', error);
+        console.error('Error handling resignation:', error);
+        socket.emit('error', { message: 'Failed to resign' });
       }
-      
-      io.to(gameId).emit('player-resigned', { userId });
     });
 
-    socket.on('offer-draw', ({ gameId, userId }) => {
-      console.log(`Draw offered in game ${gameId} by user ${userId}`);
-      socket.to(gameId).emit('draw-offered');
+    socket.on('offer-draw', async ({ gameId, userId }) => {
+      try {
+        const GameModel = Game;
+        const gameData = await GameModel.findById(gameId);
+
+        if (!gameData || gameData.status !== 'active') {
+          socket.emit('error', { message: 'Game is not active' });
+          return;
+        }
+
+        const offeringPlayer = gameData.whitePlayer.toString() === userId ? 'white' : 'black';
+        
+        socket.to(gameId).emit('draw-offered', {
+          offeredBy: offeringPlayer
+        });
+
+        console.log(`🤝 Draw offered by ${offeringPlayer} in game ${gameId}`);
+      } catch (error) {
+        console.error('Error offering draw:', error);
+        socket.emit('error', { message: 'Failed to offer draw' });
+      }
     });
 
     socket.on('accept-draw', async ({ gameId }) => {
-      console.log(`Draw accepted in game ${gameId}`);
-      
-      // Update game in database
       try {
-        const mongoose = require('mongoose');
-        if (mongoose.connection.readyState === 1) {
-          const GameModel = mongoose.connection.models.Game || require('./src/models/Game').default;
-          const game = await GameModel.findById(gameId)
-            .populate('whitePlayer', 'username rating')
-            .populate('blackPlayer', 'username rating');
-          if (game) {
-            game.status = 'completed';
-            game.endedAt = new Date();
-            game.endReason = 'draw';
-            game.result = 'draw';
-            game.winner = null;
-            // Update Elo ratings for draw
-            await updatePlayerRatings(game, null, true);
-            await game.save();
-            console.log(`Game ${gameId} ended in draw`);
-          }
+        const GameModel = Game;
+        const gameData = await GameModel.findById(gameId)
+          .populate('whitePlayer', 'username rating')
+          .populate('blackPlayer', 'username rating');
+
+        if (!gameData || gameData.status !== 'active') {
+          socket.emit('error', { message: 'Game is not active' });
+          return;
         }
+
+        gameData.status = 'completed';
+        gameData.result = 'draw';
+
+        await updatePlayerRatings(gameData, null, true);
+        await gameData.save();
+
+        io.to(gameId).emit('draw-accepted', {
+          gameData: await GameModel.findById(gameId)
+            .populate('whitePlayer', 'username rating')
+            .populate('blackPlayer', 'username rating')
+        });
+
+        console.log(`🤝 Draw accepted in game ${gameId}`);
       } catch (error) {
-        console.error('Error updating game on draw:', error);
+        console.error('Error accepting draw:', error);
+        socket.emit('error', { message: 'Failed to accept draw' });
       }
-      
-      io.to(gameId).emit('draw-accepted');
+    });
+
+    socket.on('decline-draw', ({ gameId }) => {
+      socket.to(gameId).emit('draw-declined');
+      console.log(`❌ Draw declined in game ${gameId}`);
     });
 
     socket.on('time-update', async ({ gameId, whiteTime, blackTime }) => {
-      // Broadcast to ALL clients in the game room (including sender)
-      io.to(gameId).emit('time-updated', { whiteTime, blackTime });
-      
-      // Update time in database
       try {
-        const mongoose = require('mongoose');
-        if (mongoose.connection.readyState === 1) {
-          const GameModel = mongoose.connection.models.Game || require('./src/models/Game').default;
-          const game = await GameModel.findById(gameId);
-          if (game && game.status === 'active') {
-            game.whiteTimeRemaining = whiteTime;
-            game.blackTimeRemaining = blackTime;
-            await game.save();
-          }
-        }
+        const GameModel = Game;
+        await GameModel.findByIdAndUpdate(gameId, {
+          whiteTimeRemaining: whiteTime,
+          blackTimeRemaining: blackTime
+        });
+        
+        // Broadcast updated time to all clients in the game
+        io.to(gameId).emit('time-sync', {
+          whiteTime,
+          blackTime
+        });
       } catch (error) {
         console.error('Error updating time:', error);
       }
     });
 
+    socket.on('request-sync', async ({ gameId }) => {
+      try {
+        const GameModel = Game;
+        const gameData = await GameModel.findById(gameId)
+          .populate('whitePlayer', 'username rating')
+          .populate('blackPlayer', 'username rating');
+
+        if (!gameData) return;
+
+        // Get or recreate game from memory
+        let game = games.get(gameId);
+        if (!game) {
+          const chess = new Chess();
+          if (gameData.moves && gameData.moves.length > 0) {
+            gameData.moves.forEach(m => chess.move(m));
+          }
+          game = { chess, players: new Set() };
+          games.set(gameId, game);
+        }
+
+        const isGameOver = gameData?.status === 'completed';
+        
+        // Send current state to requesting client
+        socket.emit('game-state', {
+          fen: game.chess.fen(),
+          turn: game.chess.turn(),
+          isCheck: game.chess.isCheck(),
+          isCheckmate: game.chess.isCheckmate(),
+          isStalemate: game.chess.isStalemate(),
+          isDraw: game.chess.isDraw(),
+          isGameOver: isGameOver,
+          whiteTimeRemaining: gameData.whiteTimeRemaining || 0,
+          blackTimeRemaining: gameData.blackTimeRemaining || 0,
+          gameData: gameData
+        });
+      } catch (error) {
+        console.error('Error syncing game state:', error);
+      }
+    });
+
     socket.on('disconnect', () => {
-      console.log('❌ Client disconnected:', socket.id);
+      console.log('🔌 Client disconnected:', socket.id);
     });
   });
 

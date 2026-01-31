@@ -57,28 +57,30 @@ export default function FriendsPage() {
     });
 
     // Friend request events
-    newSocket.on('friend-request-received', () => {
+    newSocket.on('friend-request-received', (targetUserId) => {
       console.log('New friend request received!');
       setNotification({ message: 'New friend request received!', type: 'info' });
       fetchFriends();
     });
 
-    newSocket.on('friend-request-accepted', () => {
+    newSocket.on('friend-request-accepted', (message) => {
       console.log('Your friend request was accepted!');
-      setNotification({ message: 'Friend request accepted!', type: 'success' });
+      setNotification({ message: message.message || 'Friend request accepted!', type: 'success' });
       fetchFriends();
     });
 
-    newSocket.on('friend-request-rejected', () => {
+    newSocket.on('friend-request-rejected', (message) => {
       console.log('Your friend request was rejected');
-      setNotification({ message: 'Friend request was declined', type: 'warning' });
+      console.log('Message:', message);
+      setNotification({ message: message['message'] || 'Friend request was declined', type: 'warning' });
       fetchFriends();
     });
 
     // Challenge events
-    newSocket.on('challenge-received', () => {
+    newSocket.on('challenge-received', (message) => {
       console.log('New challenge received!');
-      setNotification({ message: 'New challenge received!', type: 'info' });
+      console.log('Message:', message);
+      setNotification({ message: message.message || 'New challenge received!', type: 'info' });
       fetchChallenges();
     });
 
@@ -88,9 +90,9 @@ export default function FriendsPage() {
       setTimeout(() => router.push(`/game/${gameId}`), 1000);
     });
 
-    newSocket.on('challenge-rejected', () => {
+    newSocket.on('challenge-rejected', (message) => {
       console.log('✅ Challenge rejected event received - refreshing challenges list');
-      setNotification({ message: 'Challenge was declined', type: 'warning' });
+      setNotification({ message: message.message || 'Challenge was declined', type: 'warning' });
       fetchChallenges();
     });
 
@@ -161,10 +163,9 @@ export default function FriendsPage() {
       const response = await axios.post('/api/friends/respond', { requesterId, action });
       if (response.data.success) {
         fetchFriends();
-        
         // Notify the requester via socket
         if (socket) {
-          socket.emit('friend-request-response', { targetUserId: requesterId, action });
+          socket.emit('friend-request-response', { targetUserId: requesterId, action, message: response.data.message });
         }
       }
     } catch (error) {
@@ -189,6 +190,7 @@ export default function FriendsPage() {
           socket.emit('send-challenge', {
             challengeId: response.data.data.challenge._id,
             challengedUserId: friendId,
+            message: response.data.message
           });
         }
         
@@ -214,6 +216,7 @@ export default function FriendsPage() {
             challengerId: response.data.data.challengerId,
             action,
             gameId: response.data.data?.gameId,
+            message: response.data.data?.message
           });
         }
         
@@ -304,13 +307,20 @@ export default function FriendsPage() {
                         </p>
                       </div>
                     </div>
-                    <Button
-                      size="sm"
-                      onClick={() => handleSendRequest(user._id)}
-                    >
-                      <UserPlus className="h-4 w-4 mr-2" />
-                      Add Friend
-                    </Button>
+                    <>
+                      {
+                        friends.some(f => f._id === user._id) ? 'Friends' : 
+                        pendingRequests.some(r => r.from._id === user._id) ? 'Requested' : 
+                        <Button
+                          size="sm"
+                          onClick={() => handleSendRequest(user._id)}
+                        >
+                          <UserPlus className="h-4 w-4 mr-2" />
+                          Add Friend
+                        </Button>
+                      }
+                    </>
+                      
                   </div>
                 ))}
               </div>

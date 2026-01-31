@@ -1,0 +1,15 @@
+{
+  "name": "chess-socket-server",
+  "version": "1.0.0",
+  "description": "Socket.io server for chess application",
+  "main": "socket-server.js",
+  "scripts": {
+    "start": "node socket-server.js"
+  },
+  "dependencies": {
+    "socket.io": "^4.6.1",
+    "chess.js": "^1.0.0-beta.8",
+    "mongoose": "^8.1.1",
+    "dotenv": "^17.2.3"
+  }
+}

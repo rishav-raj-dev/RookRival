@@ -81,7 +81,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      message: 'Friend request sent successfully',
+      message: `Friend request sent successfully to ${targetUser.username}`,
     });
   } catch (error) {
     console.error('Send friend request error:', error);

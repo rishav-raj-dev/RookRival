@@ -69,7 +69,7 @@ export async function POST(request: NextRequest) {
 
       return NextResponse.json({
         success: true,
-        message: 'Friend request accepted',
+        message: 'Friend request accepted by ' + currentUser.username,
       });
     } else {
       // Reject - just update status and remove from sent requests
@@ -82,7 +82,7 @@ export async function POST(request: NextRequest) {
 
       return NextResponse.json({
         success: true,
-        message: 'Friend request rejected',
+        message: `Friend request rejected by ${currentUser.username}`,
       });
     }
   } catch (error) {
