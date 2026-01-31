@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import axios from 'axios';
+import { io, Socket } from 'socket.io-client';
 import { useAuthCheck } from '@/hooks/useAuthCheck';
 import { useAuthStore } from '@/store';
 import { Button } from '@/app/components/Button';
@@ -19,6 +20,8 @@ export default function DashboardPage() {
   const [searching, setSearching] = useState(false);
   const [searchTimer, setSearchTimer] = useState(60);
   const [pollInterval, setPollInterval] = useState<NodeJS.Timeout | null>(null);
+  const [notificationCount, setNotificationCount] = useState(0);
+  const [socket, setSocket] = useState<Socket | null>(null);
 
   useEffect(() => {
     if (authLoading) return;
@@ -29,6 +32,67 @@ export default function DashboardPage() {
     }
     
     setLoading(false);
+    
+    // Fetch notification count
+    const fetchNotifications = async () => {
+      try {
+        const response = await axios.get('/api/friends/notifications');
+        if (response.data.success) {
+          setNotificationCount(response.data.data.total);
+        }
+      } catch (error) {
+        console.error('Failed to fetch notifications:', error);
+      }
+    };
+    
+    fetchNotifications();
+    
+    // Initialize Socket.IO for real-time updates
+    const newSocket = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3000');
+    setSocket(newSocket);
+
+    newSocket.on('connect', () => {
+      console.log('Connected to socket server');
+      // Join user-specific room for notifications
+      newSocket.emit('join-user', user._id);
+    });
+
+    // Listen for friend request events
+    newSocket.on('friend-request-received', () => {
+      console.log('Friend request received event');
+      fetchNotifications();
+    });
+
+    newSocket.on('friend-request-accepted', () => {
+      console.log('Friend request accepted event');
+      fetchNotifications();
+    });
+
+    newSocket.on('friend-request-rejected', () => {
+      console.log('Friend request rejected event');
+      fetchNotifications();
+    });
+
+    // Listen for challenge events
+    newSocket.on('challenge-received', () => {
+      console.log('Challenge received event');
+      fetchNotifications();
+    });
+
+    newSocket.on('challenge-accepted', () => {
+      console.log('Challenge accepted event');
+      fetchNotifications();
+    });
+
+    newSocket.on('challenge-rejected', () => {
+      console.log('Challenge rejected event');
+      fetchNotifications();
+    });
+    
+    return () => {
+      newSocket.disconnect();
+    }
+    return () => clearInterval(notificationInterval);
   }, [user, router, authLoading]);
 
   useEffect(() => {
@@ -216,9 +280,16 @@ export default function DashboardPage() {
           <Link href="/friends">
             <Card className="hover:shadow-lg transition-shadow cursor-pointer h-full">
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Users className="h-6 w-6" />
-                  Friends
+                <CardTitle className="flex items-center gap-2 justify-between">
+                  <div className="flex items-center gap-2">
+                    <Users className="h-6 w-6" />
+                    Friends
+                  </div>
+                  {notificationCount > 0 && (
+                    <span className="inline-flex items-center justify-center h-6 min-w-[24px] px-2 text-xs font-bold text-white bg-red-500 rounded-full">
+                      {notificationCount}
+                    </span>
+                  )}
                 </CardTitle>
               </CardHeader>
               <CardContent>
