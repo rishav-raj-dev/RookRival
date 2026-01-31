@@ -240,9 +240,9 @@ app.prepare().then(() => {
           socket.emit('error', { message: 'Game data is incomplete' });
           return;
         }
-
-        const whitePlayerId = (gameData.whitePlayer._id || gameData.whitePlayer).toString();
-        const blackPlayerId = (gameData.blackPlayer._id || gameData.blackPlayer).toString();
+        // console.log(`game data: `, gameData);
+        const whitePlayerId = (gameData.whitePlayer._id).toString();
+        const blackPlayerId = (gameData.blackPlayer._id).toString();
         const userIdStr = userId.toString();
         const userColor = whitePlayerId === userIdStr ? 'w' : 'b';
         
@@ -259,7 +259,7 @@ app.prepare().then(() => {
           return;
         }
 
-        gameData.moves.push(move);
+        gameData.moves.push(result.san);
         gameData.currentFen = game.chess.fen();
 
         if (game.chess.isGameOver()) {
@@ -344,16 +344,16 @@ app.prepare().then(() => {
         gameData.status = 'completed';
         gameData.result = resigningPlayer === 'white' ? 'black' : 'white';
         gameData.winner = winnerPlayer._id || winnerPlayer;
+        gameData.endReason = 'resignation';
 
         await updatePlayerRatings(gameData, winnerPlayer, false);
         await gameData.save();
 
         io.to(gameId).emit('player-resigned', {
-          resignedPlayer: resigningPlayer,
-          winner: gameData.result,
-          gameData: await GameModel.findById(gameId)
+          userId,
+          currentGame: await GameModel.findById(gameId)
             .populate('whitePlayer', 'username rating')
-            .populate('blackPlayer', 'username rating')
+            .populate('blackPlayer', 'username rating'),
         });
 
         console.log(`🏳️ Player ${userId} resigned in game ${gameId}`);
@@ -400,6 +400,7 @@ app.prepare().then(() => {
 
         gameData.status = 'completed';
         gameData.result = 'draw';
+        gameData.endReason = 'draw';
 
         await updatePlayerRatings(gameData, null, true);
         await gameData.save();

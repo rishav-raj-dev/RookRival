@@ -7,6 +7,9 @@ const inter = Inter({ subsets: ['latin'] })
 export const metadata: Metadata = {
   title: 'RookRival - Play Online Chess',
   description: 'Play chess online with friends or random opponents',
+  icons: {
+    icon: '/favicon.png',
+  },
 }
 
 export default function RootLayout({

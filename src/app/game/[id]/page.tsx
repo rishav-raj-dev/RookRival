@@ -217,24 +217,10 @@ export default function GamePage() {
       setNotification({ message: 'Opponent offers a draw', type: 'info' });
     });
 
-    newSocket.on('player-resigned', ({ userId }) => {
+    newSocket.on('player-resigned', ({ userId, currentGame }) => {
       console.log('Player resigned:', userId);
       setGameOver(true);
-      setGame((currentGame: any) => {
-        if (!currentGame) return currentGame;
-        const resignedPlayerIsWhite = currentGame.whitePlayer._id === userId;
-        setGameResult({
-          reason: 'resignation',
-          winner: resignedPlayerIsWhite ? currentGame.blackPlayer : currentGame.whitePlayer,
-        });
-        const isCurrentUserResigned = userId === user?._id;
-        if (isCurrentUserResigned) {
-          setNotification({ message: 'You resigned. Game over.', type: 'info' });
-        } else {
-          setNotification({ message: 'Opponent resigned. You win!', type: 'success' });
-        }
-        return currentGame;
-      });
+      setGame(currentGame);
       // Refetch user data to get updated rating
       refetchUserData();
     });
@@ -516,6 +502,7 @@ export default function GamePage() {
         socket.emit('make-move', {
           gameId,
           move: { from, to, promotion: 'q' },
+          userId: user?._id,
         });
       }
 
@@ -640,6 +627,7 @@ export default function GamePage() {
           {/* Right Column - Game Controls & Info */}
           <div className="space-y-4">
             {/* Game Status */}
+            {console.log('Rendering game status. GameOver:', gameOver, 'GameResult:', gameResult)}
             {gameOver && gameResult && (
               <Card className="bg-blue-50 border-blue-200">
                 <CardHeader>
@@ -650,9 +638,7 @@ export default function GamePage() {
                     <p className="text-lg font-semibold">
                       {gameResult.winner._id === user?._id ? '🎉 You won!' : 'You lost'}
                     </p>
-                  ) : (
-                    <p className="text-lg font-semibold">Draw</p>
-                  )}
+                  ) : null}
                   <p className="text-sm text-gray-600 mt-2">
                     By {gameResult.reason}
                   </p>

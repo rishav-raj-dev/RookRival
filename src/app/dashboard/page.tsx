@@ -91,8 +91,11 @@ export default function DashboardPage() {
     
     return () => {
       newSocket.disconnect();
-    }
-    return () => clearInterval(notificationInterval);
+      if (pollInterval) {
+        clearInterval(pollInterval);
+        setPollInterval(null);
+      }
+    };
   }, [user, router, authLoading]);
 
   useEffect(() => {
