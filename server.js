@@ -259,6 +259,19 @@ app.prepare().then(() => {
           return;
         }
 
+        // Update captured pieces
+        if (result.captured) {
+          const color = result.color === 'w' ? 'white' : 'black';
+          if (!game.capturedPieces) {
+            game.capturedPieces = { white: [], black: [] };
+          }
+          game.capturedPieces[color].push(result.captured);
+        }
+        console.log('Captured pieces:', game.capturedPieces);
+
+        // Update game data in DB
+        gameData.capturedPieces = game.capturedPieces;
+
         gameData.moves.push(result.san);
         gameData.currentFen = game.chess.fen();
 
